@@ -1,0 +1,14 @@
+# counter.lhd
+module Counter(WIDTH=8):
+    in:
+        clk: bit
+    out:
+        q: v[WIDTH]
+    
+    val: u[WIDTH]
+    
+    comb:
+        q = v(val)
+        
+    sync(~clk):
+        val = val + 1

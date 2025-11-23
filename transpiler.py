@@ -18,32 +18,46 @@ class VHDLExpressionParser:
             right = self.parse(node.right)
             op = self._map_operator(node.op)
             return f"({left} {op} {right})"
-        elif isinstance(node, ast.Compare):
-            left = self.parse(node.left)
-            op = self._map_comparator(node.ops[0])
-            right = self.parse(node.comparators[0])
-            return f"({left} {op} {right})"
+        
+        # [NEW] 支援函數呼叫 (型別轉換)
+        elif isinstance(node, ast.Call):
+            func_name = node.func.id
+            # 處理單參數函數
+            if node.args:
+                arg = self.parse(node.args[0])
+                if func_name == 'v': return f"std_logic_vector({arg})"
+                if func_name == 'u': return f"unsigned({arg})"
+                if func_name == 's': return f"signed({arg})"
+                if func_name == 'int': return f"to_integer({arg})"
+                return f"{func_name}({arg})"
+            return f"{func_name}()"
+
         elif isinstance(node, ast.Subscript):
             value = self.parse(node.value)
-            # 處理 Slice (sig[7:0]) vs Index (mem[addr])
             if isinstance(node.slice, ast.Slice):
-                upper = self.parse(node.slice.upper) if node.slice.upper else "0"
-                lower = self.parse(node.slice.lower) if node.slice.lower else "0"
-                return f"{value}({upper} downto {lower})"
+                # [FIX] 修正 Slice 方向: [High:Low] -> High downto Low
+                # Python AST: node.slice.lower 是冒號左邊 (High)
+                # Python AST: node.slice.upper 是冒號右邊 (Low)
+                high = self.parse(node.slice.lower) if node.slice.lower else "0"
+                low = self.parse(node.slice.upper) if node.slice.upper else "0"
+                return f"{value}({high} downto {low})"
             else:
-                # Python < 3.9 compatibility
+                # Indexing logic (保持不變)
                 slice_node = node.slice.value if isinstance(node.slice, ast.Index) else node.slice
                 index_expr = self.parse(slice_node)
-                # 自動轉型邏輯：如果是變數索引，包 to_integer
                 if index_expr.isdigit():
                     return f"{value}({index_expr})"
                 else:
                     return f"{value}(to_integer({index_expr}))"
+        
+        # ... (其餘 UnaryOp, Compare 保持不變) ...
         elif isinstance(node, ast.UnaryOp):
-            if isinstance(node.op, ast.Invert) or isinstance(node.op, ast.Not):
+             if isinstance(node.op, ast.Invert) or isinstance(node.op, ast.Not):
                 return f"not {self.parse(node.operand)}"
+        
         return "UNKNOWN_EXPR"
-
+    
+    # ... (_map_operator, _map_comparator 保持不變) ...
     def _map_operator(self, op):
         if isinstance(op, ast.Add): return "+"
         if isinstance(op, ast.Sub): return "-"
@@ -316,66 +330,73 @@ def preprocess_litehdl(code):
     return code
 
 # ==============================================================================
-# 4. 測試範例 (Test Case)
+# 5. 命令列工具介面 (CLI Entry Point)
 # ==============================================================================
-source_code = """
-module TopLevel(SYS_FREQ=50000000):
-    in:
-        sys_clk: bit
-        sys_rst_n: bit
-        rx_pin: bit
-    out:
-        leds: u[8]
+import argparse
+import os
 
-    # 內部訊號
-    cnt_val: u[32]
-    mem_data: v[32]
+def main():
+    # 1. 設定參數解析
+    parser = argparse.ArgumentParser(description="LiteHDL to VHDL Compiler")
+    parser.add_argument("input_file", help="Path to the LiteHDL source file (.lhd)")
+    parser.add_argument("-o", "--output", help="Path to the output VHDL file (default: same as input with .vhd)")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Print generated VHDL to console")
     
-    # 定義一個 RAM
-    ram: v[32][16]
+    args = parser.parse_args()
 
-    # 實例化 Counter
-    u0 = Counter(WIDTH=32, MAX=SYS_FREQ):
-        in:
-            clk = sys_clk
-            rst = sys_rst_n
-        out:
-            cnt = cnt_val
+    # 2. 檢查輸入檔案
+    if not os.path.exists(args.input_file):
+        print(f"Error: Input file '{args.input_file}' not found.")
+        return
 
-    # 組合邏輯
-    comb:
-        # 取出計數器高 8 位
-        leds = cnt_val[31:24]
-        # 讀取 RAM (自動加上 to_integer)
-        mem_data = ram[leds]
-
-    # 循序邏輯
-    sync(sys_clk, ~sys_rst_n):
-        if sys_rst_n:
-            pass # Reset logic
-        else:
-            # 簡單的 RAM 寫入
-            ram[leds] = cnt_val
-"""
-
-if __name__ == "__main__":
+    # 3. 讀取原始碼
     try:
-        print("--- LiteHDL Source ---")
-        print(source_code)
+        with open(args.input_file, 'r', encoding='utf-8') as f:
+            source_code = f.read()
+    except Exception as e:
+        print(f"Error reading file: {e}")
+        return
+
+    # 4. 編譯過程
+    try:
+        print(f"Compiling {args.input_file} ...")
         
-        # 1. 前處理
+        # Step A: Preprocessing
         valid_python = preprocess_litehdl(source_code)
         
-        # 2. AST 解析
+        # Step B: AST Parsing
         tree = ast.parse(valid_python)
-        parser = LiteHDLParser()
-        parser.visit(tree)
+        compiler = LiteHDLParser()
+        compiler.visit(tree)
         
-        # 3. 生成 VHDL
-        print("\n--- Generated VHDL ---")
-        print(parser.generate_vhdl())
+        # Step C: VHDL Generation
+        vhdl_code = compiler.generate_vhdl()
         
+        # 5. 輸出結果
+        output_path = args.output
+        if not output_path:
+            # 預設輸出檔名: input.lhd -> input.vhd
+            base_name = os.path.splitext(args.input_file)[0]
+            output_path = base_name + ".vhd"
+            
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(vhdl_code)
+            
+        print(f"Success! VHDL generated at: {output_path}")
+        
+        if args.verbose:
+            print("\n--- Generated VHDL Code ---")
+            print(vhdl_code)
+            print("---------------------------")
+
+    except SyntaxError as e:
+        print(f"\n[Syntax Error] Line {e.lineno}: {e.msg}")
+        print(f" >> {e.text.strip() if e.text else ''}")
+        print("Tip: Check your indentation and colons.")
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"\n[Compiler Error]: {e}")
         import traceback
         traceback.print_exc()
+
+if __name__ == "__main__":
+    main()
