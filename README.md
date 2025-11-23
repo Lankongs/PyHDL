@@ -1,14 +1,14 @@
 # 使用方法
-1. VSCode 必須開在 PyHDL 的上一層
+1. VSCode 必須開在 litehdl 的上一層
 
 	正確：
 
-	C:\Users\USER\Desktop> python -m litehdl.cli.main mymodule.lhd
+	C:\Users\USER\Desktop\PyHDL> python -m litehdl.cli.main mymodule.lhd
 
 
 	錯誤（會找不到套件）：
 
-	C:\Users\USER\Desktop\PyHDL> python -m litehdl.cli.main mymodule.lhd
+	C:\Users\USER\Desktop\PyHDL\litehdl> python -m litehdl.cli.main mymodule.lhd
 
 
 	Python 要用上一層，才能找到 litehdl/ 這個 package。
